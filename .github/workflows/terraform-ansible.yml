@@ -53,7 +53,67 @@ jobs:
       - name: Run Checkov (Terraform security Scan)
         working-directory: terraform
         run: checkov -d .
-        
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64
+          chmod +x opa
+          sudo mv opa /usr/local/bin/opa
+          opa version
+
+      # -----------------------------
+      # Create OPA policy dynamically
+      # -----------------------------
+      - name: Create OPA policy (policies.rego)
+        working-directory: terraform
+        run: |
+          cat << 'EOF' > policies.rego
+          package terraform.security
+
+          # Deny resources without tags
+          deny[msg] {
+            resource := input.resource_changes[_]
+            not resource.change.after.tags
+            msg := sprintf("Resource %s has no tags", [resource.address])
+          }
+
+          # Prevent public S3 buckets
+          deny[msg] {
+            resource := input.resource_changes[_]
+            resource.type == "aws_s3_bucket"
+            resource.change.after.acl == "public-read"
+            msg := sprintf("Public S3 bucket not allowed: %s", [resource.address])
+          }
+
+          # Restrict EC2 instance size
+          deny[msg] {
+            resource := input.resource_changes[_]
+            resource.type == "aws_instance"
+            resource.change.after.instance_type == "t2.micro"
+            msg := sprintf("Instance type t2.micro not allowed: %s", [resource.address])
+          }
+          EOF
+
+      # -----------------------------
+      # Run OPA policy check
+      # -----------------------------
+      - name: Run OPA Policy Check
+        working-directory: terraform
+        run: |
+          violations=$(opa eval \
+            --format=json \
+            --input plan.json \
+            --data policies.rego \
+            "data.terraform.security.deny")
+
+          echo "$violations"
+
+          if [[ "$violations" != "[]" ]]; then
+            echo "❌ OPA policy violations detected"
+            exit 1
+          else
+            echo "✅ OPA policies passed"
+          fi
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve tfplan
