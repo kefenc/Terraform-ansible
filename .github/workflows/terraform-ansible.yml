@@ -50,7 +50,7 @@ jobs:
 
       - name: Run Checkov (Terraform security Scan)
         working-directory: terraform
-        run: checkov -d
+        run: checkov -d terraform/
         
       - name: Terraform Apply
         working-directory: terraform
